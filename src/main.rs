@@ -2,29 +2,39 @@ use peanut::{Template, AddNodeError};
 
 fn main() -> Result<(), AddNodeError> {
     let mut template = Template::new();
-    let abilities = template.add_group("abilities", None)?;
-    template.add_node("strength", Some(abilities), false)?;
-    template.add_node("dexterity", Some(abilities), false)?;
-    template.add_node("constitution", Some(abilities), false)?;
-    template.add_node("intelligence", Some(abilities), false)?;
-    template.add_node("wisdom", Some(abilities), false)?;
-    template.add_node("charisma", Some(abilities), false)?;
+    let mut abilities = template.add_group("abilities")?;
 
-    let charisma = template.find_node("abilities.charisma", None);
+    abilities.add_node("strength", false)?;
+    abilities.add_node("dexterity", false)?;
+    abilities.add_node("constitution", false)?;
+    abilities.add_node("intelligence", false)?;
+    abilities.add_node("wisdom", false)?;
+    abilities.add_node("charisma", false)?;
+
+    // TODO: Let `template.find_node` be called
+    let charisma = abilities.find_node("charisma");
 
     println!("{charisma:?}");
 
-    let charismae = template.add_group("charismae", Some(abilities))?;
-    template.add_node("secret charisma", Some(charismae), false)?;
+    let mut charismae = abilities.add_group("charismae")?;
+    charismae.add_node("secret charisma",  false)?;
 
-    let secret = template.find_node("charismae.secret charisma", Some(abilities));
+    let secret = abilities.find_node("charismae.secret charisma");
 
     println!("{secret:?}");
 
-    let deep = ["this", "one", "goes", "so", "very", "deep", "oh", "wow", "this", "is", "deep"];
+    // TODO: Make this work
+    // let deep = ["this", "one", "goes", "so", "very", "deep", "oh", "wow", "this", "is", "long"];
 
-    
+    // let first = template.add_group(deep[0]);
 
+    // deep.iter().fold(first, |prev, name| {
+    //     prev?.add_group(name)
+    // });
+
+    // let deep_found = template.find_node("this.one.goes.so.very.deep.oh.wow.this.is.long");
+
+    // println!("{deep_found:?}");
     println!("{template:?}");
 
     Ok(())

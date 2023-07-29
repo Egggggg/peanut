@@ -70,7 +70,7 @@ pub struct Leaf {
     pub parent: Option<NodeId>,
 }
 
-/// A handle to a group in a template
+/// A node that can contain other nodes
 #[derive(Clone, Debug)]
 pub struct Group {
     /// The ID of this node, for reference by other nodes
@@ -79,6 +79,20 @@ pub struct Group {
     pub children: Vec<NodeId>,
     /// The direct parent of this node, if any
     pub parent: Option<NodeId>
+}
+
+/// A handle to a leaf node
+#[derive(Debug)]
+pub struct LeafHandle<'a> {
+    pub id: NodeId,
+    pub template: &'a mut Template,
+}
+
+/// A handle to a group node
+#[derive(Debug)]
+pub struct GroupHandle<'a> {
+    pub id: NodeId,
+    pub template: &'a mut Template,
 }
 
 /// Metanodes are special nodes that modify their direct parents
@@ -166,7 +180,11 @@ impl Template {
         }
     }
     
-    pub fn add_group(&mut self, name: &str, parent: Option<NodeId>) -> Result<NodeId, AddNodeError> {
+    pub fn add_group(&mut self, name: &str) -> Result<GroupHandle, AddNodeError> {
+        self.add_group_inner(name, None)
+    }
+
+    fn add_group_inner(&mut self, name: &str, parent: Option<NodeId>) -> Result<GroupHandle, AddNodeError> {
         let id = self.new_id();
         let group = Group {
             id,
@@ -177,11 +195,19 @@ impl Template {
         self.add_parent(parent, id)?;
         self.nodes.insert(id, (Node::Group(group), name.to_owned()));
 
-        Ok(id)
+        let handle = GroupHandle {
+            id,
+            template: self,
+        };
+
+        Ok(handle)
     }
 
+    pub fn add_node(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+        self.add_node_inner(name, None, deferred)
+    }
 
-    pub fn add_node(&mut self, name: &str, parent: Option<NodeId>, deferred: bool) -> Result<NodeId, AddNodeError> {
+    fn add_node_inner(&mut self, name: &str, parent: Option<NodeId>, deferred: bool) -> Result<LeafHandle, AddNodeError> {
         let id = self.new_id();
         let leaf = Leaf {
             id,
@@ -193,10 +219,19 @@ impl Template {
         self.add_parent(parent, id)?;
         self.nodes.insert(id, (Node::Leaf(leaf), name.to_owned()));
 
-        Ok(id)
+        let handle = LeafHandle {
+            id,
+            template: self,
+        };
+
+        Ok(handle)
     }
 
-    pub fn find_node(&mut self, path: &str, parent: Option<NodeId>) -> Option<NodeId> {
+    pub fn find_node(&mut self, path: &str) -> Option<NodeId> {
+        self.find_node_inner(path, None)
+    }
+
+    fn find_node_inner(&self, path: &str, parent: Option<NodeId>) -> Option<NodeId> {
         let (name, path, last) = if let Some((name, path)) = path.split_once(".") {
             (name, path, false)
         } else {
@@ -234,7 +269,7 @@ impl Template {
                 if last {
                     Some(group.id)
                 } else {
-                    self.find_node(path, Some(group.id))
+                    self.find_node_inner(path, Some(group.id))
                 }
             },
             Node::Leaf(leaf) => {
@@ -246,5 +281,19 @@ impl Template {
             }
         }
         
+    }
+}
+
+impl<'a> GroupHandle<'a> {
+    pub fn add_group(&mut self, name: &str) -> Result<GroupHandle, AddNodeError> {
+        self.template.add_group_inner(name, Some(self.id))
+    }
+
+    pub fn add_node(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+        self.template.add_node_inner(name, Some(self.id), deferred)
+    }
+
+    pub fn find_node(&mut self, path: &str) -> Option<NodeId> {
+        self.template.find_node_inner(path, Some(self.id))
     }
 }
