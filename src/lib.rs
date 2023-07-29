@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc, cell::RefCell};
 
 /// A Node ID, used internally for inter-node references
 pub type NodeId = u64;
@@ -9,9 +9,11 @@ pub type Integer = i64;
 /// The whole big guy
 #[derive(Clone, Debug)]
 pub struct Template {
-    /// All nodes in the template, with their names
-    nodes: HashMap<NodeId, (Node, String)>,
-    /// The ID to use for the next identifier. This will just increment
+    /// All nodes in the template by ID
+    nodes: HashMap<NodeId, (Rc<RefCell<Node>>, String)>,
+    /// All nodes in the template by identifier
+    nodes_named: HashMap<String, (Rc<RefCell<Node>>, NodeId)>,
+    /// The ID to use for the next ID. This will just increment
     next_id: NodeId,
 }
 
@@ -151,6 +153,7 @@ impl Template {
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),
+            nodes_named: HashMap::new(),
             next_id: 1,
         }
     }
@@ -165,7 +168,7 @@ impl Template {
     fn add_parent(&mut self, parent: Option<NodeId>, id: NodeId) -> Result<(), AddNodeError> {
         if let Some(parent_id) = parent {
             if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                match parent.0 {
+                match *parent.0.borrow_mut() {
                     Node::Group(ref mut group) => {
                         group.children.push(id);
                         Ok(())
@@ -193,7 +196,11 @@ impl Template {
         };
 
         self.add_parent(parent, id)?;
-        self.nodes.insert(id, (Node::Group(group), name.to_owned()));
+
+        let group_node = Rc::new(RefCell::new(Node::Group(group)));
+
+        self.nodes.insert(id, (group_node.clone(), name.to_owned()));
+        self.nodes_named.insert(name.to_owned(), (group_node, id));
 
         let handle = GroupHandle {
             id,
@@ -217,7 +224,10 @@ impl Template {
         };
 
         self.add_parent(parent, id)?;
-        self.nodes.insert(id, (Node::Leaf(leaf), name.to_owned()));
+
+        let leaf_node = Rc::new(RefCell::new(Node::Leaf(leaf)));
+        self.nodes.insert(id, (leaf_node.clone(), name.to_owned()));
+        self.nodes_named.insert(name.to_owned(), (leaf_node, id));
 
         let handle = LeafHandle {
             id,
@@ -250,7 +260,7 @@ impl Template {
             },
             Some(parent_id) => {
                 let (parent, _) = self.nodes.get(&parent_id)?;
-                let Node::Group(parent) = parent else {
+                let Node::Group(ref parent) = *parent.borrow() else {
                     return None;
                 };
 
@@ -263,8 +273,10 @@ impl Template {
                 })?
             }
         };
+
+
             
-        match &self.nodes.get(&id).unwrap().0 {
+        match self.nodes.get(&id).unwrap().0.borrow() {
             Node::Group(group) => {
                 if last {
                     Some(group.id)
