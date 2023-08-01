@@ -1,4 +1,8 @@
+mod tree;
+
 use std::{collections::HashMap, rc::Rc, cell::RefCell};
+
+pub use tree::NodeTree;
 
 /// A Node ID, used internally for inter-node references
 pub type NodeId = u64;
@@ -10,9 +14,7 @@ pub type Integer = i64;
 #[derive(Clone, Debug)]
 pub struct Template {
     /// All nodes in the template by ID
-    nodes: HashMap<NodeId, (Rc<RefCell<Node>>, String)>,
-    /// All nodes in the template by identifier
-    nodes_named: HashMap<String, (Rc<RefCell<Node>>, NodeId)>,
+    nodes: HashMap<NodeId, (Node, String)>,
     /// The ID to use for the next ID. This will just increment
     next_id: NodeId,
 }
@@ -83,6 +85,12 @@ pub struct Group {
     pub parent: Option<NodeId>
 }
 
+#[derive(Debug)]
+pub enum NodeHandle<'a> {
+    Leaf(LeafHandle<'a>),
+    Group(GroupHandle<'a>),
+}
+
 /// A handle to a leaf node
 #[derive(Debug)]
 pub struct LeafHandle<'a> {
@@ -147,15 +155,25 @@ pub enum Constraint {
 pub enum AddNodeError {
     ParentNotExists,
     ParentIsLeaf,
+    NameConflict,
 }
 
 impl Template {
     pub fn new() -> Self {
-        Self {
+        let mut template = Self {
             nodes: HashMap::new(),
-            nodes_named: HashMap::new(),
             next_id: 1,
-        }
+        };
+
+        let mother_group = Group {
+            id: 0,
+            children: Vec::new(),
+            parent: None,
+        };
+
+        template.nodes.insert(0, (Node::Group(mother_group), "[THE MOTHER]".to_owned()));
+
+        template
     }
 
     fn new_id(&mut self) -> NodeId {
@@ -165,42 +183,34 @@ impl Template {
         id
     }
 
-    fn add_parent(&mut self, parent: Option<NodeId>, id: NodeId) -> Result<(), AddNodeError> {
-        if let Some(parent_id) = parent {
-            if let Some(parent) = self.nodes.get_mut(&parent_id) {
-                match *parent.0.borrow_mut() {
-                    Node::Group(ref mut group) => {
-                        group.children.push(id);
-                        Ok(())
-                    },
-                    Node::Leaf(_) => Err(AddNodeError::ParentIsLeaf),
-                }
-            } else {
-                Err(AddNodeError::ParentNotExists)
+    fn add_child(&mut self, parent: NodeId, id: NodeId) -> Result<(), AddNodeError> {
+        if let Some(parent) = self.nodes.get_mut(&parent) {
+            match parent.0 {
+                Node::Group(ref mut group) => {
+                    group.children.push(id);
+                    Ok(())
+                },
+                Node::Leaf(_) => Err(AddNodeError::ParentIsLeaf),
             }
         } else {
-            Ok(())
+            Err(AddNodeError::ParentNotExists)
         }
     }
-    
-    pub fn add_group(&mut self, name: &str) -> Result<GroupHandle, AddNodeError> {
-        self.add_group_inner(name, None)
-    }
 
-    fn add_group_inner(&mut self, name: &str, parent: Option<NodeId>) -> Result<GroupHandle, AddNodeError> {
+    pub fn add_group_to(&mut self, name: &str, parent: NodeId) -> Result<GroupHandle, AddNodeError> {
+        if let Some(_) = self.get_node_from(name, parent) {
+            return Err(AddNodeError::NameConflict);
+        }
+
         let id = self.new_id();
         let group = Group {
             id,
             children: Vec::new(),
-            parent,
+            parent: Some(parent),
         };
 
-        self.add_parent(parent, id)?;
-
-        let group_node = Rc::new(RefCell::new(Node::Group(group)));
-
-        self.nodes.insert(id, (group_node.clone(), name.to_owned()));
-        self.nodes_named.insert(name.to_owned(), (group_node, id));
+        self.add_child(parent, id)?;
+        self.nodes.insert(id, (Node::Group(group), name.to_owned()));
 
         let handle = GroupHandle {
             id,
@@ -210,24 +220,21 @@ impl Template {
         Ok(handle)
     }
 
-    pub fn add_node(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
-        self.add_node_inner(name, None, deferred)
-    }
-
-    fn add_node_inner(&mut self, name: &str, parent: Option<NodeId>, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+    pub fn add_leaf_to(&mut self, name: &str, parent: NodeId, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+        if let Some(_) = self.get_node_from(name, parent) {
+            return Err(AddNodeError::NameConflict);
+        }
+        
         let id = self.new_id();
         let leaf = Leaf {
             id,
             value: ValueKind::Undefined,
             deferred,
-            parent,
+            parent: Some(parent),
         };
 
-        self.add_parent(parent, id)?;
-
-        let leaf_node = Rc::new(RefCell::new(Node::Leaf(leaf)));
-        self.nodes.insert(id, (leaf_node.clone(), name.to_owned()));
-        self.nodes_named.insert(name.to_owned(), (leaf_node, id));
+        self.add_child(parent, id)?;
+        self.nodes.insert(id, (Node::Leaf(leaf), name.to_owned()));
 
         let handle = LeafHandle {
             id,
@@ -237,51 +244,40 @@ impl Template {
         Ok(handle)
     }
 
-    pub fn find_node(&mut self, path: &str) -> Option<NodeId> {
-        self.find_node_inner(path, None)
-    }
-
-    fn find_node_inner(&self, path: &str, parent: Option<NodeId>) -> Option<NodeId> {
+    pub fn get_node_from(&self, path: &str, parent: NodeId) -> Option<NodeId> {
         let (name, path, last) = if let Some((name, path)) = path.split_once(".") {
             (name, path, false)
         } else {
             (path, path, true)
         };
 
-        let id = match parent {
-            None => {
-                self.nodes.iter().find_map(|(id, (_, current))| {
-                    if current == name {
-                        Some(*id)
-                    } else {
-                        None
-                    }
-                })?
-            },
-            Some(parent_id) => {
-                let (parent, _) = self.nodes.get(&parent_id)?;
-                let Node::Group(ref parent) = *parent.borrow() else {
-                    return None;
-                };
+        let id = {
+            let (parent, _) = self.nodes.get(&parent)?;
+            let Node::Group(ref parent) = *parent else {
+                return None;
+            };
 
-                parent.children.iter().find_map(|child_id| {
-                    if self.nodes.get(child_id)?.1 == name {
-                        Some(*child_id)
-                    } else {
-                        None
-                    }
-                })?
-            }
+            println!("{}'s children: {:?}", parent.id, parent.children);
+
+            parent.children.iter().find_map(|child_id| {
+                let child_name = &self.nodes.get(child_id)?.1;
+                println!("{child_name} vs {name}");
+                if child_name == name {
+                    Some(*child_id)
+                } else {
+                    None
+                }
+            })?
         };
 
-
+        let node = &self.nodes.get(&id).unwrap().0;
             
-        match self.nodes.get(&id).unwrap().0.borrow() {
+        match node {
             Node::Group(group) => {
                 if last {
                     Some(group.id)
                 } else {
-                    self.find_node_inner(path, Some(group.id))
+                    self.get_node_from(path, group.id)
                 }
             },
             Node::Leaf(leaf) => {
@@ -293,19 +289,5 @@ impl Template {
             }
         }
         
-    }
-}
-
-impl<'a> GroupHandle<'a> {
-    pub fn add_group(&mut self, name: &str) -> Result<GroupHandle, AddNodeError> {
-        self.template.add_group_inner(name, Some(self.id))
-    }
-
-    pub fn add_node(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
-        self.template.add_node_inner(name, Some(self.id), deferred)
-    }
-
-    pub fn find_node(&mut self, path: &str) -> Option<NodeId> {
-        self.template.find_node_inner(path, Some(self.id))
     }
 }

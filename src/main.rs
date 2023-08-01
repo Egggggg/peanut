@@ -1,4 +1,8 @@
-use peanut::{Template, AddNodeError};
+use crate::{Template, AddNodeError, NodeTree};
+
+mod template;
+
+pub use template::*;
 
 fn main() -> Result<(), AddNodeError> {
     let mut template = Template::new();
@@ -11,30 +15,31 @@ fn main() -> Result<(), AddNodeError> {
     abilities.add_node("wisdom", false)?;
     abilities.add_node("charisma", false)?;
 
-    // TODO: Let `template.find_node` be called
-    let charisma = abilities.find_node("charisma");
-
-    println!("{charisma:?}");
-
     let mut charismae = abilities.add_group("charismae")?;
     charismae.add_node("secret charisma",  false)?;
 
-    let secret = abilities.find_node("charismae.secret charisma");
+    let secret = abilities.get_leaf("charismae.secret charisma");
 
     println!("{secret:?}");
 
-    // TODO: Make this work
-    // let deep = ["this", "one", "goes", "so", "very", "deep", "oh", "wow", "this", "is", "long"];
+    let charisma = template.get_leaf("charisma");
 
-    // let first = template.add_group(deep[0]);
+    println!("{charisma:?}");
 
-    // deep.iter().fold(first, |prev, name| {
-    //     prev?.add_group(name)
-    // });
+    let deep = ["this", "one", "goes", "so", "very", "deep", "oh", "wow", "this", "is", "long"];
 
-    // let deep_found = template.find_node("this.one.goes.so.very.deep.oh.wow.this.is.long");
+    let GroupHandle { mut id, template: _ } = template.add_group(deep[0])?;
 
-    // println!("{deep_found:?}");
+    println!("Original ID: {id}");
+
+    for i in 1..deep.len() {
+        println!("deep[{i}]: {}", deep[i]);
+        GroupHandle { id, template: _ } = template.add_group_to(deep[i], id)?;
+    }
+
+    let deep_found = template.get_group("this.one.goes.so.very.deep.oh.wow.this.is.long");
+
+    println!("{deep_found:?}");
     println!("{template:?}");
 
     Ok(())
