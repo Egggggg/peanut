@@ -1,10 +1,12 @@
 mod tree;
+mod leaf;
 
-use std::{collections::HashMap, rc::Rc, cell::RefCell};
+use std::collections::HashMap;
 
 pub use tree::NodeTree;
+pub use leaf::*;
 
-/// A Node ID, used internally for inter-node references
+/// A Node ID, used for referencing nodes
 pub type NodeId = u64;
 
 /// The number type
@@ -28,50 +30,6 @@ pub enum Node {
     Group(Group),
     // / A node that fulfills a special purpose
     // Meta(Meta),
-}
-
-/// The global path to a node
-pub type NodePath = Vec<NodeId>;
-
-/// A single value contained within a leaf node
-#[derive(Clone, Debug)]
-pub enum Value {
-    /// A 64 bit signed integer
-    Integer(Integer),
-    /// A UTF-8 string
-    String(String),
-    /// A list of values, can only contain a single type of value at a time
-    List(Vec<Value>),
-}
-
-/// Empty values for type resolution
-#[derive(Clone, Debug)]
-pub enum ValueKind {
-    Undefined,
-    Integer,
-    String,
-    IntegerList,
-    StringList,
-}
-
-/// An expression to be evaluated before being referenced
-#[derive(Clone, Debug)]
-pub enum Expr {
-    Literal(Value),
-    Reference(NodePath),
-}
-
-/// A node with a single value
-#[derive(Clone, Debug)]
-pub struct Leaf {
-    /// The ID of this node, for reference by other nodes
-    pub id: NodeId,
-    /// The value accessible by referring to the node
-    pub value: ValueKind,
-    /// A deferred leaf is not evaluated until it is used by an action
-    pub deferred: bool,
-    /// The direct parent of this node, if any
-    pub parent: Option<NodeId>,
 }
 
 /// A node that can contain other nodes
@@ -133,7 +91,7 @@ pub enum Meta {
 }
 
 /// Empty metanodes for type resolution
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetaKind {
     Common,
     Sum,
@@ -151,11 +109,17 @@ pub enum Constraint {
     Equal(u64),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddNodeError {
     ParentNotExists,
     ParentIsLeaf,
     NameConflict,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditLeafError {
+    NotExists,
+    NotLeaf,
 }
 
 impl Template {
@@ -228,7 +192,8 @@ impl Template {
         let id = self.new_id();
         let leaf = Leaf {
             id,
-            value: ValueKind::Undefined,
+            value_kind: ValueKind::Undefined,
+            value: None,
             deferred,
             parent: Some(parent),
         };
@@ -257,11 +222,9 @@ impl Template {
                 return None;
             };
 
-            println!("{}'s children: {:?}", parent.id, parent.children);
-
             parent.children.iter().find_map(|child_id| {
                 let child_name = &self.nodes.get(child_id)?.1;
-                println!("{child_name} vs {name}");
+
                 if child_name == name {
                     Some(*child_id)
                 } else {
@@ -288,6 +251,265 @@ impl Template {
                 }
             }
         }
-        
+    }
+
+    fn set_leaf_value(&mut self, id: NodeId, value: Value) -> Result<(), EditLeafError> {
+        let (node, _) = self.nodes.get_mut(&id).ok_or(EditLeafError::NotExists)?;
+        let node = match node {
+            Node::Leaf(leaf) => Ok(leaf),
+            Node::Group(_) => Err(EditLeafError::NotLeaf),
+        }?;
+
+        let value_kind: ValueKind = (&value).into();
+
+        node.value_kind = value_kind;
+        node.value = Some(Expr::Literal(value));
+
+        Ok(())
+    }
+
+    fn set_leaf_expr(&mut self, id: NodeId, expr: Expr) -> Result<(), EditLeafError> {
+        let value_kind = self.check_expr_type(&expr);
+        let (node, _) = self.nodes.get_mut(&id).ok_or(EditLeafError::NotExists)?;
+        let node = match node {
+            Node::Leaf(leaf) => Ok(leaf),
+            Node::Group(_) => Err(EditLeafError::NotLeaf),
+        }?;
+
+        node.value_kind = value_kind;
+        node.value = Some(expr);
+
+        Ok(())
+    }
+
+    fn check_expr_type(&self, expr: &Expr) -> ValueKind {
+        match expr {
+            Expr::Literal(value) => value.into(),
+            Expr::Reference(id) => {
+                if let Some((Node::Leaf(node), _)) = self.nodes.get(id) {
+                    node.value_kind
+                } else {
+                    ValueKind::Undefined
+                }
+            }
+            Expr::InfixOp(op) => {
+                (&**op).into()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{LeafHandle, GroupHandle};
+
+    use super::{Template, AddNodeError, NodeTree};
+
+    #[test]
+    fn add_leaf() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        template.add_leaf("gup", false)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn name_conflict() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        template.add_leaf("gup", false)?;
+        let node = template.add_leaf("gup", false);
+        let node = node.map(|_| "gup");
+
+        assert_eq!(node, Err(AddNodeError::NameConflict));
+
+        Ok(())
+    }
+
+    #[test]
+    fn parent_missing() {
+        let mut template = Template::new();
+        let node = template.add_leaf_to("gup", 50, false);
+        let node = node.map(|_| "gup");
+
+        assert_eq!(node, Err(AddNodeError::ParentNotExists));
+    }
+
+    #[test]
+    fn parent_leaf() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+        let LeafHandle { id, template: _ } = template.add_leaf("gup", false)?;
+        let child = template.add_leaf_to("gup", id, false);
+        let child = child.map(|_| "gup");
+
+        assert_eq!(child, Err(AddNodeError::ParentIsLeaf));
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_leaf() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        template.add_leaf("gup", false)?;
+        let node = template.get_leaf("gup");
+        let node = node.map(|_| "gup");
+    
+        assert_ne!(node, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        template.add_group("gorp")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        template.add_group("gorp")?;
+        let node = template.get_group("gorp");
+        let node = node.map(|_| "gup");
+
+        assert_ne!(node, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_leaf_to_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let mut node = template.add_group("gorp")?;
+        node.add_leaf("gup", false)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_group_to_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let mut first = template.add_group("gorp")?;
+        first.add_group("gorp2")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_leaf_from_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let mut group = template.add_group("gorp")?;
+        group.add_leaf("gup", false)?;
+
+        let node = group.get_leaf("gup");
+        let node = node.map(|_| "gup");
+
+        assert_ne!(node, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_group_from_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let mut first = template.add_group("gorp")?;
+        first.add_group("gorp2")?;
+
+        let second = first.get_group("gorp2");
+        let second = second.map(|_| "gorp2");
+
+        assert_ne!(second, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_nested_groups() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let groups = ["nested1", "nested2", "nested3", "nested4", "nested5"];
+
+        let GroupHandle { mut id, template: _ } = template.add_group(groups[0])?;
+
+        for i in 1..groups.len() {
+            GroupHandle { id, template: _ } = template.add_group_to(groups[i], id)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_nested_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let groups = ["nested1", "nested2", "nested3", "nested4", "nested5"];
+
+        let GroupHandle { mut id, template: _ } = template.add_group(groups[0])?;
+
+        for i in 1..groups.len() {
+            GroupHandle { id, template: _ } = template.add_group_to(groups[i], id)?;
+        }
+
+        let path = groups.join(".");
+        let last = template.get_group(&path);
+        let last = last.map(|_| "nested");
+
+        assert_ne!(last, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_deep_groups() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let mut groups: Vec<String> = Vec::with_capacity(512);
+
+        for i in 0..groups.capacity() {
+            groups.push(format!("gorp{i}"));
+        }
+
+        let GroupHandle { mut id, template: _ } = template.add_group(&groups[0])?;
+
+        for i in 1..groups.len() {
+            GroupHandle { id, template: _ } = template.add_group_to(&format!("{}{i}", groups[i]), id)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn find_deep_group() -> Result<(), AddNodeError> {
+        let mut template = Template::new();
+
+        let mut groups: Vec<String> = Vec::with_capacity(512);
+
+        for i in 0..groups.capacity() {
+            groups.push(format!("gorp{i}"));
+        }
+
+        let GroupHandle { mut id, template: _ } = template.add_group(&groups[0])?;
+
+        for i in 1..groups.len() {
+            GroupHandle { id, template: _ } = template.add_group_to(&groups[i], id)?;
+        }
+
+        let path = groups.join(".");
+        let last = template.get_group(&path);
+        let last = last.map(|_| "gorp");
+
+        assert_ne!(last, None);
+
+        Ok(())
     }
 }
