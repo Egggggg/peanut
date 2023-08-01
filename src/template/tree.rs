@@ -102,7 +102,7 @@ pub trait NodeTree {
         template.add_group_to(name, id)
     }
 
-    fn add_node(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+    fn add_leaf(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
         let id = self.get_id();
         let template = self.get_template_mut();
         template.add_leaf_to(name, id, deferred)
