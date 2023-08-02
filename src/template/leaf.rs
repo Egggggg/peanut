@@ -1,4 +1,6 @@
-use crate::{NodeId, Integer, LeafHandle, EditLeafError};
+use crate::{NodeId, Integer, LeafHandle, EditLeafError, Node};
+
+use super::NodeTree;
 
 /// A single value contained within a leaf node
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +83,38 @@ impl From<&InfixOp> for ValueKind {
     }
 }
 
+impl From<Integer> for Value {
+    fn from(value: Integer) -> Self {
+        Value::Integer(value)
+    }
+}
+
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::String(value)
+    }
+}
+
+impl From<Value> for Expr {
+    fn from(value: Value) -> Self {
+        Expr::Literal(value)
+    }
+}
+
+impl From<Integer> for Expr {
+    fn from(value: Integer) -> Self {
+        let i: Value = value.into();
+        i.into()
+    }
+}
+
+impl From<String> for Expr {
+    fn from(value: String) -> Self {
+        let i: Value = value.into();
+        i.into()
+    }
+}
+
 impl<'a> LeafHandle<'a> {
     pub fn set_value(&mut self, value: Value) -> Result<&mut Self, EditLeafError> {
         self.template.set_leaf_value(self.id, value)?;
@@ -92,5 +126,14 @@ impl<'a> LeafHandle<'a> {
         self.template.set_leaf_expr(self.id, expr)?;
 
         Ok(self)
+    }
+
+    pub fn get_value(&self) -> Option<&Expr> {
+        match &self.template.nodes.get(&self.id)?.0 {
+            Node::Leaf(leaf) => {
+                (&leaf).value.as_ref()
+            },
+            _ => None
+        }
     }
 }

@@ -301,7 +301,7 @@ impl Template {
 
 #[cfg(test)]
 mod tests {
-    use crate::{LeafHandle, GroupHandle};
+    use crate::{LeafHandle, GroupHandle, EditLeafError, Expr, Value, InfixOp, OpKind};
 
     use super::{Template, AddNodeError, NodeTree};
 
@@ -357,6 +357,31 @@ mod tests {
         let node = node.map(|_| "gup");
     
         assert_ne!(node, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn leaf_set_value() -> Result<(), EditLeafError> {
+        let mut template = Template::new();
+
+        let mut node = template.add_leaf("gup", false).unwrap();
+        node.set_value(53.into())?;
+
+        assert_eq!(node.get_value(), Some(&53.into()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn leaf_set_expr() -> Result<(), EditLeafError> {
+        let mut template = Template::new();
+        let expr = Expr::InfixOp(Box::new(InfixOp { lhs: 53.into(), rhs: 47.into(), kind: OpKind::Add }));
+
+        let mut node = template.add_leaf("gup", false).unwrap();
+        node.set_expr(expr.clone())?;
+
+        assert_eq!(node.get_value(), Some(&expr));
 
         Ok(())
     }

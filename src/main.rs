@@ -1,6 +1,7 @@
 use crate::{Template, AddNodeError, NodeTree};
 
 mod template;
+mod object;
 
 pub use template::*;
 
