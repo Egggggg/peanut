@@ -1,6 +1,4 @@
-use crate::{NodeId, Integer, LeafHandle, EditLeafError, Node};
-
-use super::NodeTree;
+use super::{NodeId, Integer, LeafHandle, EditLeafError, Node};
 
 /// A single value contained within a leaf node
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +25,8 @@ pub enum ValueKind {
 pub enum Expr {
     Literal(Value),
     Reference(NodeId),
+    /// This one can be used to reference whatever has the name contained in the referenced node
+    IdentRef(NodeId),
     InfixOp(Box<InfixOp>),
 }
 
@@ -47,23 +47,6 @@ pub enum OpKind {
     Div,
     Pow,
     Neg,
-}
-
-/// A node with a single value
-#[derive(Clone, Debug)]
-pub struct Leaf {
-    /// The ID of this node, for reference by other nodes
-    pub id: NodeId,
-    /// The type of value accessible by referring to the node
-    pub value_kind: ValueKind,
-    /// `Some` if the leaf contains a static value or a dynamic expression
-    /// 
-    /// If this is a dynamic expression, it must evaluate to the type in `value_kind`
-    pub value: Option<Expr>,
-    /// A deferred leaf is not evaluated until it is used by an action
-    pub deferred: bool,
-    /// The direct parent of this node, if any
-    pub parent: Option<NodeId>,
 }
 
 impl From<&Value> for ValueKind {

@@ -1,16 +1,19 @@
 mod tree;
 mod leaf;
+mod handle;
+mod meta;
 
 use std::collections::HashMap;
 
 pub use tree::NodeTree;
 pub use leaf::*;
+pub use handle::Handle;
 
 /// A Node ID, used for referencing nodes
-pub type NodeId = u64;
+pub type NodeId = usize;
 
 /// The number type
-pub type Integer = i64;
+pub type Integer = isize;
 
 /// The whole big guy
 #[derive(Clone, Debug)]
@@ -29,7 +32,7 @@ pub enum Node {
     /// A node that may contain subnodes
     Group(Group),
     // / A node that fulfills a special purpose
-    // Meta(Meta),
+    Meta(Meta),
 }
 
 /// A node that can contain other nodes
@@ -40,13 +43,35 @@ pub struct Group {
     /// Any children contained within this node
     pub children: Vec<NodeId>,
     /// The direct parent of this node, if any
-    pub parent: Option<NodeId>
+    pub parent: Option<NodeId>,
+    /// Metadata attached to this node
+    pub metadata: Vec<NodeId>,
+}
+
+/// A node with a single value
+#[derive(Clone, Debug)]
+pub struct Leaf {
+    /// The ID of this node, for reference by other nodes
+    pub id: NodeId,
+    /// The type of value accessible by referring to the node
+    pub value_kind: ValueKind,
+    /// `Some` if the leaf contains a static value or a dynamic expression
+    /// 
+    /// If this is a dynamic expression, it must evaluate to the type in `value_kind`
+    pub value: Option<Expr>,
+    /// A deferred leaf is not evaluated until it is used by an action
+    pub deferred: bool,
+    /// The direct parent of this node, if any
+    pub parent: Option<NodeId>,
+    /// Metadata attached to this node
+    pub metadata: Vec<NodeId>,
 }
 
 #[derive(Debug)]
 pub enum NodeHandle<'a> {
     Leaf(LeafHandle<'a>),
     Group(GroupHandle<'a>),
+    Meta(MetaHandle<'a>),
 }
 
 /// A handle to a leaf node
@@ -63,57 +88,81 @@ pub struct GroupHandle<'a> {
     pub template: &'a mut Template,
 }
 
-/// Metanodes are special nodes that modify their direct parents
+#[derive(Debug)]
+pub struct MetaHandle<'a> {
+    pub id: NodeId,
+    pub template: &'a mut Template,
+}
+
 #[derive(Clone, Debug)]
-pub enum Meta {
-    /// Any children of metanode will be added to all children of the direct parent
+pub struct Meta {
+    pub id: NodeId,
+    pub data: Metadata,
+}
+
+/// Types of metadata to tell the template what to make without making it yourself
+#[derive(Clone, Debug)]
+pub enum MetadataStart {
+    Comment(String),
+    Note(String, String),
+    Common,
+    Sum,
+    Ident,
+    Concat,
+    Constraint(Constraint),
+}
+
+/// Certain metadata variants can modify other nodes
+#[derive(Clone, Debug)]
+pub enum Metadata {
+    /// An untitled comment
+    /// 
+    /// Applicable to: Any
+    Comment(String),
+    /// A note with a title
+    /// 
+    /// Applicable to: Any
+    Note(String, String),
+    /// Any children of this metanode will be added to all children of the direct parent
     /// 
     /// Applicable to: Groups
     Common(Group),
-    /// Contains a list of integer values, which will be added together before being referenced
+    /// Contains a list of integer values, which will be added together to form the direct parent's value
     /// 
     /// Applicable to: Leaves
-    Sum(NodeId, Vec<Integer>),
+    Sum(Vec<Integer>),
     /// Contains the identifier belonging to its direct parent
     /// 
     /// If used in a `__common` metanode, this will contain the identifier of the node it is being placed into
     /// 
     /// Applicable to: Any
-    Ident(NodeId),
-    /// Combines strings sequentially
+    Ident,
+    /// Concatenates strings
     /// 
     /// Applicable to: Groups
-    Concat(NodeId, Vec<Expr>),
+    Concat(Vec<Expr>),
     /// Constrains the value of its direct parent
     /// 
     /// Applicable to: Leaves
     Constraint(Constraint),
 }
 
-/// Empty metanodes for type resolution
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MetaKind {
-    Common,
-    Sum,
-    Ident,
-    Concat,
-    Constraint,
-}
-
 #[derive(Clone, Debug)]
 pub enum Constraint {
-    GreaterThan(u64),
-    GreaterOrEqual(u64),
-    LessThan(u64),
-    LessOrEqual(u64),
-    Equal(u64),
+    GreaterThan(Integer),
+    GreaterOrEqual(Integer),
+    LessThan(Integer),
+    LessOrEqual(Integer),
+    Equal(Integer),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddNodeError {
     ParentNotExists,
     ParentIsLeaf,
+    InvalidParent,
     NameConflict,
+    InvalidName,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +182,7 @@ impl Template {
             id: 0,
             children: Vec::new(),
             parent: None,
+            metadata: Vec::new(),
         };
 
         template.nodes.insert(0, (Node::Group(mother_group), "[THE MOTHER]".to_owned()));
@@ -155,10 +205,50 @@ impl Template {
                     Ok(())
                 },
                 Node::Leaf(_) => Err(AddNodeError::ParentIsLeaf),
+                Node::Meta(ref mut meta) => match &mut meta.data {
+                    Metadata::Common(ref mut group) => {
+                        group.children.push(id);
+                        Ok(())
+                    },
+                    _ => Err(AddNodeError::ParentIsLeaf),
+                },
             }
         } else {
             Err(AddNodeError::ParentNotExists)
         }
+    }
+
+    // TODO: Make a macro for the `add_*_to` methods
+    pub fn add_leaf_to(&mut self, name: &str, parent: NodeId, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+        if let Some(_) = self.get_node_from(name, parent) {
+            return Err(AddNodeError::NameConflict);
+        }
+
+        if !self.verify_name(name) {
+            return Err(AddNodeError::InvalidName)
+        }
+        
+        let id = self.new_id();
+        let leaf = Leaf {
+            id,
+            value_kind: ValueKind::Undefined,
+            value: None,
+            deferred,
+            parent: Some(parent),
+            metadata: Vec::new(),
+        };
+
+        println!("{:#?}", self.nodes.get(&parent));
+
+        self.add_child(parent, id)?;
+        self.nodes.insert(id, (Node::Leaf(leaf), name.to_owned()));
+
+        let handle = LeafHandle {
+            id,
+            template: self,
+        };
+
+        Ok(handle)
     }
 
     pub fn add_group_to(&mut self, name: &str, parent: NodeId) -> Result<GroupHandle, AddNodeError> {
@@ -166,11 +256,16 @@ impl Template {
             return Err(AddNodeError::NameConflict);
         }
 
+        if !self.verify_name(name) {
+            return Err(AddNodeError::InvalidName)
+        }
+
         let id = self.new_id();
         let group = Group {
             id,
             children: Vec::new(),
             parent: Some(parent),
+            metadata: Vec::new(),
         };
 
         self.add_child(parent, id)?;
@@ -184,24 +279,60 @@ impl Template {
         Ok(handle)
     }
 
-    pub fn add_leaf_to(&mut self, name: &str, parent: NodeId, deferred: bool) -> Result<LeafHandle, AddNodeError> {
+    pub fn add_meta_to(&mut self, name: &str, parent: NodeId, start: MetadataStart) -> Result<MetaHandle, AddNodeError> {
         if let Some(_) = self.get_node_from(name, parent) {
             return Err(AddNodeError::NameConflict);
         }
-        
-        let id = self.new_id();
-        let leaf = Leaf {
-            id,
-            value_kind: ValueKind::Undefined,
-            value: None,
-            deferred,
-            parent: Some(parent),
+
+        if !self.verify_name(name) {
+            return Err(AddNodeError::InvalidName)
+        }
+
+        let data = match start {
+            MetadataStart::Comment(comment) => Metadata::Comment(comment),
+            MetadataStart::Note(title, note) => Metadata::Note(title, note),
+            MetadataStart::Common => {
+                let group = Group {
+                    id: self.new_id(),
+                    children: Vec::new(),
+                    parent: Some(parent),
+                    metadata: Vec::new(),
+                };
+
+                Metadata::Common(group)
+            },
+            MetadataStart::Sum => Metadata::Sum(Vec::new()),
+            MetadataStart::Ident => Metadata::Ident,
+            MetadataStart::Concat => Metadata::Concat(Vec::new()),
+            MetadataStart::Constraint(constraint) => Metadata::Constraint(constraint),
         };
 
-        self.add_child(parent, id)?;
-        self.nodes.insert(id, (Node::Leaf(leaf), name.to_owned()));
+        let id = self.new_id();
+        let meta = Meta {
+            id,
+            data,
+        };
 
-        let handle = LeafHandle {
+        if let Some(parent) = self.nodes.get_mut(&parent) {
+            match parent.0 {
+                Node::Group(ref mut group) => {
+                    group.metadata.push(id);
+                },
+                Node::Leaf(ref mut leaf) => leaf.metadata.push(id),
+                Node::Meta(ref mut meta) => match &mut meta.data {
+                    Metadata::Common(ref mut group) => {
+                        group.metadata.push(id);
+                    },
+                    _ => return Err(AddNodeError::ParentIsLeaf),
+                },
+            }
+        } else {
+            return Err(AddNodeError::ParentNotExists);
+        }
+
+        self.nodes.insert(id, (Node::Meta(meta), name.to_owned()));
+
+        let handle = MetaHandle {
             id,
             template: self,
         };
@@ -216,40 +347,32 @@ impl Template {
             (path, path, true)
         };
 
-        let id = {
-            let (parent, _) = self.nodes.get(&parent)?;
-            let Node::Group(ref parent) = *parent else {
-                return None;
-            };
+        let finder = |child_id| {
+            let child_name = &self.nodes.get(child_id)?.1;
 
-            parent.children.iter().find_map(|child_id| {
-                let child_name = &self.nodes.get(child_id)?.1;
-
-                if child_name == name {
-                    Some(*child_id)
-                } else {
-                    None
-                }
-            })?
+            if child_name == name {
+                Some(*child_id)
+            } else {
+                None
+            }
         };
 
-        let node = &self.nodes.get(&id).unwrap().0;
-            
-        match node {
-            Node::Group(group) => {
-                if last {
-                    Some(group.id)
-                } else {
-                    self.get_node_from(path, group.id)
-                }
-            },
-            Node::Leaf(leaf) => {
-                if last {
-                    Some(leaf.id)
-                } else {
-                    None
+        let id = {
+            let (parent, _) = self.nodes.get(&parent)?;
+            match parent {
+                Node::Group(parent) => parent.children.iter().chain(parent.metadata.iter()).find_map(finder)?,
+                Node::Leaf(parent) => parent.metadata.iter().find_map(finder)?,
+                Node::Meta(meta) => match meta.data {
+                    Metadata::Common(ref parent) => return self.get_node_from(path, parent.id),
+                    _ => return None,
                 }
             }
+        };
+        
+        if last {
+            Some(id)
+        } else {
+            self.get_node_from(path, id)
         }
     }
 
@@ -257,7 +380,7 @@ impl Template {
         let (node, _) = self.nodes.get_mut(&id).ok_or(EditLeafError::NotExists)?;
         let node = match node {
             Node::Leaf(leaf) => Ok(leaf),
-            Node::Group(_) => Err(EditLeafError::NotLeaf),
+            _ => Err(EditLeafError::NotLeaf),
         }?;
 
         let value_kind: ValueKind = (&value).into();
@@ -273,7 +396,7 @@ impl Template {
         let (node, _) = self.nodes.get_mut(&id).ok_or(EditLeafError::NotExists)?;
         let node = match node {
             Node::Leaf(leaf) => Ok(leaf),
-            Node::Group(_) => Err(EditLeafError::NotLeaf),
+            _ => Err(EditLeafError::NotLeaf),
         }?;
 
         node.value_kind = value_kind;
@@ -292,18 +415,73 @@ impl Template {
                     ValueKind::Undefined
                 }
             }
+            Expr::IdentRef(id) => ValueKind::String,
             Expr::InfixOp(op) => {
                 (&**op).into()
             }
+        }
+    }
+
+    fn verify_name(&self, name: &str) -> bool {
+        !name.contains('.')
+    }
+
+    pub fn get_leaf_by_id(&self, id: NodeId) -> Option<&Leaf> {
+        match self.nodes.get(&id)?.0 {
+            Node::Leaf(ref leaf) => Some(leaf),
+            _ => None,
+        }
+    }
+
+    pub fn get_group_by_id(&self, id: NodeId) -> Option<&Group> {
+        match self.nodes.get(&id)?.0 {
+            Node::Group(ref group) => Some(group),
+            _ => None,
+        }
+    }
+
+    pub fn get_meta_by_id(&self, id: NodeId) -> Option<&Meta> {
+        match self.nodes.get(&id)?.0 {
+            Node::Meta(ref meta) => Some(meta),
+            _ => None,
+        }
+    }
+
+    fn get_mut_leaf_by_id(&mut self, id: NodeId) -> Option<&mut Leaf> {
+        match self.nodes.get_mut(&id)?.0 {
+            Node::Leaf(ref mut leaf) => Some(leaf),
+            _ => None,
+        }
+    }
+
+    fn get_mut_group_by_id(&mut self, id: NodeId) -> Option<&mut Group> {
+        match self.nodes.get_mut(&id)?.0 {
+            Node::Group(ref mut group) => Some(group),
+            _ => None,
+        }
+    }
+
+    fn get_mut_meta_by_id(&mut self, id: NodeId) -> Option<&mut Meta> {
+        match self.nodes.get_mut(&id)?.0 {
+            Node::Meta(ref mut meta) => Some(meta),
+            _ => None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{LeafHandle, GroupHandle, EditLeafError, Expr, Value, InfixOp, OpKind};
-
-    use super::{Template, AddNodeError, NodeTree};
+    use super::{
+        LeafHandle,
+        GroupHandle,
+        EditLeafError,
+        Expr,
+        InfixOp,
+        OpKind,
+        Template,
+        AddNodeError,
+        NodeTree,
+    };
 
     #[test]
     fn add_leaf() -> Result<(), AddNodeError> {
