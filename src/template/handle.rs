@@ -85,9 +85,9 @@ pub trait Handle {
         }
     }
 
-    fn add_meta(&mut self, name: &str, node: MetadataStart) -> Result<MetaHandle, AddNodeError> {
+    fn add_meta(&mut self, name: &str, start: MetadataStart) -> Result<MetaHandle, AddNodeError> {
         let id = self.get_id();
         let template = self.get_template_mut();
-        template.add_meta_to(name, id, node)
+        template.add_meta_to(name, id, start)
     }
 }

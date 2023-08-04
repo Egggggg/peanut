@@ -75,8 +75,6 @@ impl<'a> MetaHandle<'a> {
     }
 
     pub fn add_leaf(&mut self, name: &str, deferred: bool) -> Result<LeafHandle, AddNodeError> {
-        println!("Meta ID: {}", self.id);
-
         if let Some(group) = self.check_common() {
             let mut group_handle = GroupHandle { id: group, template: self.template };
             let leaf = group_handle.add_leaf(name, deferred)?;
