@@ -1,12 +1,9 @@
 mod template;
-// mod object;
 
-use std::{time::Instant, hint::black_box};
-
-use template::{EditLeafError, Expr, InfixOp, OpKind, Value};
+use template::{Expr, InfixOp, OpKind, Value};
 pub use template::{Template, AddNodeError, NodeTree};
 
-use crate::template::{Handle, MetadataStart, MetaHandle};
+use crate::template::{Handle, MetadataStart, MetaHandle, NodeId, LeafHandle};
 
 fn main() {
     let ability_names = ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
@@ -70,13 +67,30 @@ fn main() {
         template.eval_leaf(id).unwrap()
     }).collect();
 
-    println!("STR: {:?}\nDEX: {:?}\nCON: {:?}\nINT: {:?}\nWIS: {:?}\nCHA: {:?}",
+    let mut sum = template.add_leaf("mod_sum", false).unwrap();
+    let sum_id = sum.id;
+    let mut sum_meta = sum.add_meta("name", MetadataStart::Sum).unwrap();
+    let sum_meta_id = sum_meta.id;
+
+    sum_meta.set_value(template::Metadata::Sum(modifiers.iter().map(|value| if let Value::Integer(value) = value {
+        *value
+    } else {
+        unreachable!();
+    }).collect())).unwrap();
+
+    let mut sum = LeafHandle { id: sum_id, template: &mut template };
+    sum.set_expr(Expr::Reference(sum_meta_id)).unwrap();
+    
+    let sum = template.eval_leaf(sum_id).unwrap();
+
+    println!("STR: {:?}\nDEX: {:?}\nCON: {:?}\nINT: {:?}\nWIS: {:?}\nCHA: {:?}\nTotal: {:?}",
         modifiers[0],
         modifiers[1],
         modifiers[2],
         modifiers[3],
         modifiers[4],
-        modifiers[5]
+        modifiers[5],
+        sum,
     );
     assert_eq!(modifiers[5], Value::Integer(1));
 }
