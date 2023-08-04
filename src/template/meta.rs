@@ -1,6 +1,6 @@
 use crate::{NodeTree, AddNodeError};
 
-use super::{MetaHandle, Metadata, NodeHandle, Group, Node, LeafHandle, GroupHandle, Leaf, EditLeafError, Meta};
+use super::{MetaHandle, Metadata, NodeHandle, Group, Node, LeafHandle, GroupHandle, Leaf, EditLeafError, Meta, NodeId};
 
 #[derive(Clone, Copy, Debug)]
 pub enum EditMetaError {
@@ -10,10 +10,10 @@ pub enum EditMetaError {
 impl<'a> NodeTree for MetaHandle<'a> {}
 
 impl<'a> MetaHandle<'a> {
-    pub fn check_common(&self) -> Option<&Group> {
+    pub fn check_common(&self) -> Option<NodeId> {
         match self.template.get_meta_by_id(self.id) {
             Some(node) => match node.data {
-                Metadata::Common(ref group) => {
+                Metadata::Common { inner: group } => {
                     Some(group)
                 },
                 _ => None,
@@ -24,7 +24,7 @@ impl<'a> MetaHandle<'a> {
 
     pub fn get_handle(&mut self, path: &str) -> Option<NodeHandle> {
         if let Some(group) = self.check_common() {
-            let group_handle = GroupHandle { id: group.id, template: self.template };
+            let group_handle = GroupHandle { id: group, template: self.template };
             let node_handle = group_handle.get_node(path)?;
 
             // Gotta check which kind of node it is so we can return the right kind of handle
@@ -54,7 +54,7 @@ impl<'a> MetaHandle<'a> {
 
     pub fn get_node(&self, path: &str) -> Option<&Node> {
         if let Some(group) = self.check_common() {
-            self.template.nodes.get(&self.template.get_node_from(path, group.id)?).map(|(node, _)| node)
+            self.template.nodes.get(&self.template.get_node_from(path, group)?).map(|(node, _)| node)
         } else {
             None
         }
@@ -78,7 +78,7 @@ impl<'a> MetaHandle<'a> {
         println!("Meta ID: {}", self.id);
 
         if let Some(group) = self.check_common() {
-            let mut group_handle = GroupHandle { id: group.id, template: self.template };
+            let mut group_handle = GroupHandle { id: group, template: self.template };
             let leaf = group_handle.add_leaf(name, deferred)?;
 
             Ok(LeafHandle { id: leaf.id, template: self.template })
@@ -89,7 +89,7 @@ impl<'a> MetaHandle<'a> {
     
     pub fn add_group(&mut self, name: &str) -> Result<GroupHandle, AddNodeError> {
         if let Some(group) = self.check_common() {
-            let mut group_handle = GroupHandle { id: group.id, template: self.template };
+            let mut group_handle = GroupHandle { id: group, template: self.template };
             let group = group_handle.add_group(name)?;
 
             Ok(GroupHandle { id: group.id, template: self.template })

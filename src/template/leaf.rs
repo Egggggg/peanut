@@ -1,4 +1,6 @@
-use super::{NodeId, Integer, LeafHandle, EditLeafError, Node};
+mod ops;
+
+use super::{NodeId, Integer, LeafHandle, EditLeafError, Node, EvalError};
 
 /// A single value contained within a leaf node
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,5 +120,9 @@ impl<'a> LeafHandle<'a> {
             },
             _ => None
         }
+    }
+
+    pub fn eval(&mut self) -> Result<Value, EvalError>{
+        self.template.eval_leaf(self.id)
     }
 }
