@@ -7,13 +7,20 @@ pub enum EditMetaError {
     WrongKind,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum PushCommonError {
+    CommonNotExists,
+    ParentNotGroup,
+    NotCommon,
+}
+
 impl<'a> NodeTree for MetaHandle<'a> {}
 
 impl<'a> MetaHandle<'a> {
     pub fn check_common(&self) -> Option<NodeId> {
         match self.template.get_meta_by_id(self.id) {
             Some(node) => match node.data {
-                Metadata::Common { inner: group } => {
+                Metadata::Common { inner: group, value: _ } => {
                     Some(group)
                 },
                 _ => None,
@@ -98,6 +105,9 @@ impl<'a> MetaHandle<'a> {
 
     pub fn set_value(&mut self, value: Metadata) -> Result<(), EditMetaError> {
         match (&mut self.template.get_mut_meta_by_id(self.id).unwrap().data, value) {
+            (Metadata::Common { inner: _, value: ref mut old_value }, Metadata::Common { inner: _, value }) => {
+                *old_value = value;
+            }
             (Metadata::Sum(ref mut old), Metadata::Sum(new)) => {
                 *old = new;
             },
@@ -108,6 +118,32 @@ impl<'a> MetaHandle<'a> {
                 *old = new;
             }
             _ => return Err(EditMetaError::WrongKind),
+        }
+
+        Ok(())
+    }
+
+    pub fn push_common(&mut self) -> Result<(), PushCommonError> {
+        let own_node = self.template.get_meta_by_id(self.id).ok_or(PushCommonError::CommonNotExists)?;
+        let Metadata::Common { inner: ref inner, value: ref value } = &own_node.data else {
+            return Err(PushCommonError::NotCommon);
+        };
+
+        // This will be set to true after pushing and back to false after any child is changed
+        if own_node.cache_valid {
+            return Ok(());
+        }
+
+
+
+        let parent_id = own_node.parent;
+        let Some(parent) = self.template.get_group_by_id(parent_id) else {
+            return Err(PushCommonError::ParentNotGroup);
+        };
+        let neighbors = parent.children.clone();
+
+        for neighbor in neighbors {
+
         }
 
         Ok(())

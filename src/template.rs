@@ -129,7 +129,9 @@ pub enum Metadata {
     /// Any children of this metanode will be added to all other leaves of the direct parent
     /// 
     /// Applicable to: Groups
-    Common { inner: NodeId },
+    Common { inner: NodeId, value: Option<Value> },
+    /// A common proxy to be added to leaves to denote that they are affected by a __common meta node
+    CommonProxy { inner: NodeId, value: Option<Value> },
     /// Contains a list of integer values, which will be added together to form the direct parent's value
     /// 
     /// Applicable to: Leaves
@@ -194,6 +196,7 @@ pub enum EvalMetaStatus {
     WrongType,
     InvalidConcatElement,
     InternalEvalError(EvalError),
+    MissingInfo,
 }
 
 impl Template {
@@ -234,7 +237,7 @@ impl Template {
                 },
                 Node::Leaf(_) => return Err(AddNodeError::ParentIsLeaf),
                 Node::Meta(ref mut meta) => match &mut meta.data {
-                    Metadata::Common { inner: group_id } => common_inner = Some(*group_id),
+                    Metadata::Common { inner: group_id, value: _ } => common_inner = Some(*group_id),
                     _ => return Err(AddNodeError::ParentIsLeaf),
                 },
             }
@@ -342,8 +345,8 @@ impl Template {
                     common: None,
                 };
 
-                // The ID for this gropu will need to be set later if it's being put into a __common meta node
-                (Metadata::Common { inner: group.id }, Some(group))
+                // The ID for this group will need to be set later if it's being put into a __common meta node
+                (Metadata::Common { inner: group.id, value: None }, Some(group))
             },
             MetadataStart::Sum => (Metadata::Sum(Vec::new()), None),
             MetadataStart::Ident => (Metadata::Ident, None),
@@ -366,7 +369,7 @@ impl Template {
                     id
                 },
                 Node::Meta(ref mut meta) => match &mut meta.data {
-                    Metadata::Common { inner: group_id } => {
+                    Metadata::Common { inner: group_id, value: _ } => {
                         common_inner = Some(*group_id);
                         *group_id
                     },
@@ -382,10 +385,6 @@ impl Template {
         if let Some(group_id) = common_inner {
             let parent_group = self.get_mut_group_by_id(group_id).ok_or(AddNodeError::InvalidParent)?;
             parent_group.metadata.push(id);
-
-            for id in parent_group.children.clone() {
-                // Coming back to this after i think
-            }
         }
 
         let meta = Meta {
@@ -433,7 +432,7 @@ impl Template {
                 Node::Group(group) => group.children.iter().chain(group.metadata.iter()).find_map(finder)?,
                 Node::Leaf(leaf) => leaf.metadata.iter().find_map(finder)?,
                 Node::Meta(meta) => match meta.data {
-                    Metadata::Common { inner: group } => return self.get_node_from(path, group),
+                    Metadata::Common { inner: group, value: _ } => return self.get_node_from(path, group),
                     _ => return None,
                 }
             }
@@ -597,8 +596,10 @@ impl Template {
                     EvalMetaStatus::Ident => {
                         let mut next = self.nodes.get(&meta.parent).ok_or(EvalError::MissingParent(meta.id))?;
 
+
                         // The `__ident` meta node returns the name of the nearest non-meta parent node
                         loop {
+                            println!("Ident ({})", next.1);
                             if let (Node::Meta(inner), _) = next {
                                 next = self.nodes.get(&inner.parent).ok_or(EvalError::MissingParent(inner.id))?;
                                 continue;
@@ -619,6 +620,7 @@ impl Template {
                     EvalMetaStatus::WrongType => Err(EvalError::MetaType(id)),
                     EvalMetaStatus::InvalidConcatElement => Err(EvalError::InvalidType),
                     EvalMetaStatus::InternalEvalError(err) => Err(err),
+                    EvalMetaStatus::MissingInfo => Err(EvalError::MissingInfo(id)),
                 }
             },
         }?;
@@ -655,7 +657,14 @@ impl Template {
 
     fn eval_meta_inner(&self, meta: &Metadata, checked: &mut Vec<NodeId>) -> EvalMetaStatus {
         match meta {
-            Metadata::Common { inner: _ } => EvalMetaStatus::WrongType,
+            Metadata::Common { inner: _, value } => match value {
+                Some(value) => EvalMetaStatus::Success(value.clone()),
+                None => EvalMetaStatus::MissingInfo,
+            },
+            Metadata::CommonProxy { inner: _, value } => match value {
+                Some(value) => EvalMetaStatus::Success(value.clone()),
+                None => EvalMetaStatus::MissingInfo,
+            }
             Metadata::Sum(elements) => EvalMetaStatus::Success(Value::Integer(elements.iter().sum())),
             Metadata::Ident => EvalMetaStatus::Ident,
             Metadata::Concat(elements) => self.concat_meta(elements, checked),

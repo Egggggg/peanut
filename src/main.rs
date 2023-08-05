@@ -51,13 +51,11 @@ fn main() {
         ).unwrap();
     }
 
-    println!("{template:#?}");
-
-    for name in ability_names.iter() {
-        let value_id = template.get_leaf("abilities.mod.mod").unwrap().id;
-        let mut node = template.get_leaf_handle(&format!("abilities.{name}")).unwrap();
-        node.set_expr(Expr::Reference(value_id)).unwrap();
-    }
+    // for name in ability_names.iter() {
+    //     let value_id = template.get_leaf("abilities.mod.mod").unwrap().id;
+    //     let mut node = template.get_leaf_handle(&format!("abilities.{name}")).unwrap();
+    //     node.set_expr(Expr::Reference(value_id)).unwrap();
+    // }
 
     let scores = [20, 16, 18, 10, 8, 12];
 
@@ -66,6 +64,7 @@ fn main() {
         handle.set_value(Value::Integer(*score)).unwrap();
     });
 
+    println!("{template:#?}");
     println!("Evaluating modifiers");
     let modifiers: Vec<Value> = ability_names.iter().map(|name| {
         let id = template.get_leaf(&format!("abilities.{name}")).unwrap().id;
