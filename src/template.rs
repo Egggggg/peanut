@@ -73,6 +73,8 @@ pub struct Group {
     pub parent: Option<NodeId>,
     /// Metadata attached to this node
     pub metadata: Vec<NodeId>,
+    /// Common meta node, only one can be attached per group
+    pub common: Option<NodeId>,
 }
 
 #[derive(Debug)]
@@ -124,9 +126,7 @@ pub enum MetadataStart {
 /// Certain metadata variants can modify other nodes
 #[derive(Clone, Debug)]
 pub enum Metadata {
-    /// Any children of this metanode will be added to all children of the direct parent
-    /// 
-    /// The NodeId references the group it contains
+    /// Any children of this metanode will be added to all other children of the direct parent
     /// 
     /// Applicable to: Groups
     Common { inner: NodeId },
@@ -208,6 +208,7 @@ impl Template {
             children: Vec::new(),
             parent: None,
             metadata: Vec::new(),
+            common: None,
         };
 
         template.nodes.insert(0, (Node::Group(mother_group), "[THE MOTHER]".to_owned()));
@@ -300,6 +301,7 @@ impl Template {
             children: Vec::new(),
             parent: Some(parent),
             metadata: Vec::new(),
+            common: None,
         };
 
         self.add_child(parent, id)?;
@@ -313,8 +315,8 @@ impl Template {
         Ok(handle)
     }
 
-    pub fn add_meta_to(&mut self, name: &str, parent: NodeId, start: MetadataStart) -> Result<MetaHandle, AddNodeError> {
-        if let Some(_) = self.get_node_from(name, parent) {
+    pub fn add_meta_to(&mut self, name: &str, parent_id: NodeId, start: MetadataStart) -> Result<MetaHandle, AddNodeError> {
+        if let Some(_) = self.get_node_from(name, parent_id) {
             return Err(AddNodeError::NameConflict);
         }
 
@@ -324,11 +326,21 @@ impl Template {
 
         let (data, group) = match start {
             MetadataStart::Common => {
+                // __common meta nodes can only be attached to groups, and only one can be attached per group
+                if let Some(parent) = self.get_group_by_id(parent_id) {
+                    if parent.common != None {
+                        return Err(AddNodeError::InvalidParent);
+                    }
+                } else {
+                    return Err(AddNodeError::InvalidParent);
+                }
+
                 let group = Group {
                     id: self.new_id(),
                     children: Vec::new(),
-                    parent: Some(parent),
+                    parent: Some(parent_id),
                     metadata: Vec::new(),
+                    common: None,
                 };
 
                 (Metadata::Common { inner: group.id }, Some(group))
@@ -343,7 +355,7 @@ impl Template {
 
         let mut common_inner: Option<NodeId> = None;
 
-        let parent_id = if let Some(parent) = self.nodes.get_mut(&parent) {
+        let parent_id = if let Some(parent) = self.nodes.get_mut(&parent_id) {
             match parent.0 {
                 Node::Group(ref mut group) => {
                     group.metadata.push(id);
@@ -365,6 +377,7 @@ impl Template {
             return Err(AddNodeError::ParentNotExists);
         };
 
+        // Add the node to the group within the __common meta node
         // Do this separately to avoid having multiple mutable references
         if let Some(group_id) = common_inner {
             let group = self.get_mut_group_by_id(group_id).ok_or(AddNodeError::InvalidParent)?;
@@ -394,6 +407,8 @@ impl Template {
 
     /// Gets the ID of the node found at `path` relative to `parent`
     pub fn get_node_from(&self, path: &str, parent: NodeId) -> Option<NodeId> {
+        println!("\nLooking for {path}");
+
         let (name, path, last) = if let Some((name, path)) = path.split_once(".") {
             (name, path, false)
         } else {
@@ -402,6 +417,8 @@ impl Template {
 
         let finder = |child_id| {
             let child_name = &self.nodes.get(child_id)?.1;
+
+            println!("{name} vs {child_name}");
 
             if child_name == name {
                 Some(*child_id)
@@ -468,7 +485,7 @@ impl Template {
                     ValueKind::Undefined
                 }
             }
-            Expr::IdentRef(id) => ValueKind::String,
+            Expr::IdentRef(_) => ValueKind::String,
             Expr::InfixOp(op) => {
                 (&**op).into()
             }
@@ -526,16 +543,19 @@ impl Template {
     }
 
     pub fn eval_leaf(&mut self, id: NodeId) -> Result<Value, EvalError> {
+        println!("[eval_leaf] id: {id}");
+
         let mut checked = Vec::new();
         let mut updates = Vec::new();
-        let out = self.eval_leaf_inner(id, &mut checked, &mut updates);
+        let out = self.eval_leaf_inner(id, &mut checked, &mut updates, id);
 
-        // Get the leaf back so we can cache the output
-        let leaf = self.get_mut_leaf_by_id(id).unwrap();
 
         if let Ok((out, updates)) = out.clone() {
-            leaf.cached = Some(out);
-            leaf.cache_valid = true;
+            // Get the leaf back so we can cache the output
+            if let Some(leaf) = self.get_mut_leaf_by_id(id) {
+                leaf.cached = Some(out);
+                leaf.cache_valid = true;
+            }
 
             for (id, value) in updates {
                 if let Some(node) = self.get_mut_leaf_by_id(*id) {
@@ -548,10 +568,12 @@ impl Template {
         out.map(|(value, _)| value)
     }
 
-    fn eval_leaf_inner<'a>(&self, id: NodeId, checked: &mut Vec<NodeId>, updates: &'a mut Vec<(NodeId, Value)>) -> Result<(Value, &'a Vec<(NodeId, Value)>), EvalError> {
+    fn eval_leaf_inner<'a>(&self, id: NodeId, checked: &mut Vec<NodeId>, updates: &'a mut Vec<(NodeId, Value)>, last_nonmeta: NodeId) -> Result<(Value, &'a Vec<(NodeId, Value)>), EvalError> {
         if checked.contains(&id) {
             return Err(EvalError::InfiniteRecursion(id));
         }
+
+        println!("[eval_leaf_inner] id: {id}\n  last_nonmeta: {last_nonmeta}");
 
         let out = match &self.nodes.get(&id).ok_or(EvalError::MissingDependency(id))?.0 {
             Node::Leaf(leaf) => {
@@ -562,8 +584,18 @@ impl Template {
                 }
 
                 match &leaf.value {
-                    Some(expr) => self.eval_expr_inner(expr, checked),
-                    None => return Err(EvalError::MissingInfo(id)),
+                    Some(expr) => self.eval_expr_inner(expr, checked, updates, id).map(|value| value),
+                    None => {
+                        if let Some(parent) = self.get_group_by_id(leaf.parent.unwrap()) {
+                            if let Some(common_id) = &parent.common {
+                                self.eval_leaf_inner(*common_id, checked, updates, last_nonmeta).map(|(value, _)| value)
+                            } else {
+                                Err(EvalError::MissingInfo(id))
+                            }
+                        } else {
+                            Err(EvalError::MissingInfo(id))
+                        }
+                    },
                 }
             },
             Node::Group(_) => return Err(EvalError::NotALeaf(id)),
@@ -574,29 +606,31 @@ impl Template {
                     }
                 }
 
-                match self.eval_meta_inner(&meta.data, checked) {
+                match self.eval_meta_inner(&meta.data, checked, updates, last_nonmeta) {
                     EvalMetaStatus::Success(value) => Ok(value),
                     EvalMetaStatus::Ident => {
-                        let mut next = self.nodes.get(&meta.parent).ok_or(EvalError::MissingParent(meta.id))?;
+                        // let mut next = self.nodes.get(&meta.parent).ok_or(EvalError::MissingParent(meta.id))?;
 
                         // The `__ident` meta node returns the name of the nearest non-meta parent node
-                        loop {
-                            if let (Node::Meta(inner), _) = next {
-                                next = self.nodes.get(&inner.parent).ok_or(EvalError::MissingParent(inner.id))?;
-                                continue;
-                            } else if let (Node::Group(inner), name) = next {
-                                if name == "[COMMON INNER]" {
-                                    next = self.nodes.get(&inner.parent.unwrap()).ok_or(EvalError::MissingParent(inner.id))?;
-                                    continue;
-                                }
+                        // loop {
+                        //     if let (Node::Meta(inner), _) = next {
+                        //         next = self.nodes.get(&inner.parent).ok_or(EvalError::MissingParent(inner.id))?;
+                        //         continue;
+                        //     } else if let (Node::Group(inner), name) = next {
+                        //         if name == "[COMMON INNER]" {
+                        //             next = self.nodes.get(&inner.parent.unwrap()).ok_or(EvalError::MissingParent(inner.id))?;
+                        //             continue;
+                        //         }
 
-                                break;
-                            }
+                        //         break;
+                        //     }
 
-                            break;
-                        }
+                        //     break;
+                        // }
 
-                        Ok(Value::String(next.1.clone()))
+                        let nearest = self.nodes.get(&last_nonmeta).unwrap();
+                            
+                        Ok(Value::String(nearest.1.clone()))
                     }
                     EvalMetaStatus::WrongType => Err(EvalError::MetaType(id)),
                     EvalMetaStatus::InvalidConcatElement => Err(EvalError::InvalidType),
@@ -607,26 +641,26 @@ impl Template {
 
         updates.push((id, out.clone()));
 
-        Ok((out, &*updates))
+        Ok((out, updates))
     }
 
     pub fn eval_expr(&self, expr: &Expr) -> Result<Value, EvalError> {
         let mut checked = Vec::new();
         
-        self.eval_expr_inner(expr, &mut checked)
+        self.eval_expr_inner(expr, &mut checked, &mut Vec::new(), 0)
     }
 
-    fn eval_expr_inner(&self, expr: &Expr, checked: &mut Vec<NodeId>) -> Result<Value, EvalError> {
+    fn eval_expr_inner<'a>(&self, expr: &Expr, checked: &mut Vec<NodeId>, updates: &mut Vec<(NodeId, Value)> ,last_nonmeta: NodeId) -> Result<Value, EvalError> {
         match expr {
             Expr::Literal(literal) => return Ok(literal.clone()),
-            Expr::Reference(ref_id) => self.eval_leaf_inner(*ref_id, checked, &mut Vec::new()).map(|(value, _)| value),
+            Expr::Reference(ref_id) => self.eval_leaf_inner(*ref_id, checked, updates, last_nonmeta).map(|(value, _)| value),
             Expr::IdentRef(ref_id) => {
-                let referenced_path = self.eval_leaf_inner(*ref_id, checked, &mut Vec::new()).map(|(value, _)| value)?;
+                let referenced_path = self.eval_leaf_inner(*ref_id, checked, updates, last_nonmeta).map(|(value, _)| value)?;
                 
                 if let Value::String(name) = referenced_path {                                    
                     let referenced_id = self.get_node_from(&name, 0).ok_or(EvalError::MissingPathDependency(name.to_owned()))?;
 
-                    self.eval_leaf_inner(referenced_id, checked, &mut Vec::new()).map(|(value, _)| value)
+                    self.eval_leaf_inner(referenced_id, checked, updates, last_nonmeta).map(|(value, _)| value)
                 } else {
                     Err(EvalError::InvalidIdentRef(*ref_id))
                 }
@@ -635,21 +669,21 @@ impl Template {
         }
     }
 
-    fn eval_meta_inner(&self, meta: &Metadata, checked: &mut Vec<NodeId>) -> EvalMetaStatus {
+    fn eval_meta_inner(&self, meta: &Metadata, checked: &mut Vec<NodeId>, updates: &mut Vec<(NodeId, Value)>, last_nonmeta: NodeId) -> EvalMetaStatus {
         match meta {
             Metadata::Common { inner: _ } => EvalMetaStatus::WrongType,
             Metadata::Sum(elements) => EvalMetaStatus::Success(Value::Integer(elements.iter().sum())),
             Metadata::Ident => EvalMetaStatus::Ident,
-            Metadata::Concat(elements) => self.concat_meta(elements, checked),
+            Metadata::Concat(elements) => self.concat_meta(elements, checked, updates, last_nonmeta),
             Metadata::Constraint(_) => EvalMetaStatus::WrongType,
         }
     }
 
-    fn concat_meta(&self, elements: &Vec<Expr>, checked: &mut Vec<NodeId>) -> EvalMetaStatus {
+    fn concat_meta(&self, elements: &Vec<Expr>, checked: &mut Vec<NodeId>, updates: &mut Vec<(NodeId, Value)>, last_nonmeta: NodeId) -> EvalMetaStatus {
         let mut out: Vec<String> = Vec::with_capacity(elements.len());
         
         for expr in elements {
-            match self.eval_expr_inner(expr, checked) {
+            match self.eval_expr_inner(expr, checked, updates, last_nonmeta) {
                 Ok(value) => {
                     match value {
                         Value::String(value) => out.push(value),
