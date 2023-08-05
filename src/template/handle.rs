@@ -1,6 +1,6 @@
 use crate::{Template, AddNodeError};
 
-use super::{NodeId, Node, MetaHandle, Meta, Metadata, GroupHandle, LeafHandle, MetadataStart};
+use super::{NodeId, Node, MetaHandle, Meta, GroupHandle, LeafHandle, MetadataStart};
 
 impl Handle for Template {
     fn get_template(&self) -> &Template {

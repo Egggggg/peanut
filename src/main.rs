@@ -19,8 +19,9 @@ fn main() {
         abilities.add_leaf(name, false).unwrap();
     }    
 
-    for name in ability_names.iter() {
-        let mut node = template.get_leaf_handle(&format!("abilities.{name}")).unwrap();
+    // for name in ability_names.iter() {
+    {
+        let mut node = template.get_group_handle("abilities").unwrap();
         let mut meta = node.add_meta("mod", MetadataStart::Common).unwrap();
         let meta_id = meta.id;
 
@@ -31,7 +32,6 @@ fn main() {
 
         let mut meta = MetaHandle { id: meta_id, template: &mut template };
         let mut modifier = meta.add_leaf("mod", false).unwrap();
-        let mod_id = modifier.id;
         modifier.set_expr(Expr::InfixOp(
             Box::new(
                 InfixOp { 
@@ -49,10 +49,14 @@ fn main() {
                 }
             ))
         ).unwrap();
+    }
 
-        let mut base = template.get_leaf_handle(&format!("abilities.{name}")).unwrap();
+    println!("{template:#?}");
 
-        base.set_expr(Expr::Reference(mod_id)).unwrap();
+    for name in ability_names.iter() {
+        let value_id = template.get_leaf("abilities.mod.mod").unwrap().id;
+        let mut node = template.get_leaf_handle(&format!("abilities.{name}")).unwrap();
+        node.set_expr(Expr::Reference(value_id)).unwrap();
     }
 
     let scores = [20, 16, 18, 10, 8, 12];
@@ -62,8 +66,12 @@ fn main() {
         handle.set_value(Value::Integer(*score)).unwrap();
     });
 
+    println!("Evaluating modifiers");
     let modifiers: Vec<Value> = ability_names.iter().map(|name| {
         let id = template.get_leaf(&format!("abilities.{name}")).unwrap().id;
+
+        println!("abilities.{name}.id: {id}");
+
         template.eval_leaf(id).unwrap()
     }).collect();
 
@@ -72,6 +80,7 @@ fn main() {
     let mut sum_meta = sum.add_meta("name", MetadataStart::Sum).unwrap();
     let sum_meta_id = sum_meta.id;
 
+    println!("Adding modifiers to sum");
     sum_meta.set_value(template::Metadata::Sum(modifiers.iter().map(|value| if let Value::Integer(value) = value {
         *value
     } else {
